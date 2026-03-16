@@ -1,32 +1,140 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>WebSocket Test</title>
+  <title>WebSocket Party Game</title>
 </head>
 <body>
+  <h2>Party Game Lobby Test</h2>
 
-<h2>WebSocket Test</h2>
+  <div>
+    <input id="nameInput" placeholder="Enter your name">
+    <button onclick="createRoom()">Create Room</button>
+  </div>
 
-<input id="messageInput" placeholder="Type message">
-<button onclick="sendMessage()">Send</button>
+  <br>
 
-<p id="messages"></p>
+  <div>
+    <input id="roomCodeInput" placeholder="Enter room code">
+    <button onclick="joinRoom()">Join Room</button>
+  </div>
 
-<script>
-const ws = new WebSocket("ws://localhost:8080");
+  <hr>
 
-ws.onmessage = (event) => {
-  const msg = document.createElement("div");
-  msg.textContent = event.data;
-  document.getElementById("messages").appendChild(msg);
-};
+  <p><strong>Current Room:</strong> <span id="currentRoom">Not in a room</span></p>
+  <p><strong>Host:</strong> <span id="hostName">None</span></p>
 
-function sendMessage() {
-  const input = document.getElementById("messageInput");
-  ws.send(input.value);
-  input.value = "";
-}
-</script>
+  <div>
+    <input id="messageInput" placeholder="Type message">
+    <button onclick="sendMessage()">Send</button>
+  </div>
 
+  <h3>Players</h3>
+  <ul id="playerList"></ul>
+
+  <h3>Messages</h3>
+  <div id="messages"></div>
+
+  <script>
+    const ws = new WebSocket("ws://localhost:8080");
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+
+      if (data.type === "system") {
+        addMessage(`[SYSTEM] ${data.text}`);
+      }
+
+      if (data.type === "chat") {
+        addMessage(`${data.name}: ${data.text}`);
+      }
+
+      if (data.type === "players") {
+        updatePlayerList(data.players);
+        document.getElementById("hostName").textContent = data.host || "None";
+        document.getElementById("currentRoom").textContent = data.roomCode || "Not in a room";
+      }
+
+      if (data.type === "room_created") {
+        document.getElementById("currentRoom").textContent = data.roomCode;
+        addMessage(`[SYSTEM] Room created: ${data.roomCode}`);
+      }
+
+      if (data.type === "room_joined") {
+        document.getElementById("currentRoom").textContent = data.roomCode;
+        addMessage(`[SYSTEM] Joined room: ${data.roomCode}`);
+      }
+
+      if (data.type === "error") {
+        addMessage(`[ERROR] ${data.text}`);
+      }
+    };
+
+    function getName() {
+      return document.getElementById("nameInput").value.trim();
+    }
+
+    function createRoom() {
+      const name = getName();
+
+      if (!name) {
+        alert("Enter your name first");
+        return;
+      }
+
+      ws.send(JSON.stringify({
+        type: "create_room",
+        name: name
+      }));
+    }
+
+    function joinRoom() {
+      const name = getName();
+      const code = document.getElementById("roomCodeInput").value.trim();
+
+      if (!name || !code) {
+        alert("Enter your name and room code");
+        return;
+      }
+
+      ws.send(JSON.stringify({
+        type: "join_room",
+        name: name,
+        code: code
+      }));
+    }
+
+    function sendMessage() {
+      const input = document.getElementById("messageInput");
+      const text = input.value.trim();
+
+      if (!text) {
+        return;
+      }
+
+      ws.send(JSON.stringify({
+        type: "chat",
+        text: text
+      }));
+
+      input.value = "";
+    }
+
+    function addMessage(text) {
+      const messageDiv = document.createElement("div");
+      messageDiv.textContent = text;
+      document.getElementById("messages").appendChild(messageDiv);
+    }
+
+    function updatePlayerList(players) {
+      const playerList = document.getElementById("playerList");
+      playerList.innerHTML = "";
+
+      players.forEach((player) => {
+        const li = document.createElement("li");
+        li.textContent = player;
+        playerList.appendChild(li);
+      });
+    }
+  </script>
 </body>
 </html>
