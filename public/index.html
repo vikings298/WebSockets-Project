@@ -6,6 +6,26 @@
 <body>
   <h2>Party Game Lobby Test</h2>
 
+  <div id="hostControls" style="display: none; margin-top: 12px;">
+    <button id="startGameBtn">Start Game</button>
+    <button id="nextRoundBtn">Next Round</button>
+    <button id="endGameBtn">End Game</button>
+    <button id="resetLobbyBtn">Reset Lobby</button>
+  </div>
+
+  <div id="gameInfo" style="margin-top: 12px;">
+    <div><strong>Room:</strong> <span id="roomCodeDisplay">-</span></div>
+    <div><strong>Host:</strong> <span id="hostDisplay">-</span></div>
+    <div><strong>Status:</strong> <span id="gameStatus">lobby</span></div>
+    <div><strong>Round:</strong> <span id="roundDisplay">0</span></div>
+    <div><strong>Prompt:</strong> <span id="promptDisplay">-</span></div>
+  </div>
+
+  <div id="answerControls" style="margin-top: 12px;">
+    <input id="answerInput" placeholder="Enter your answer">
+    <button id="submitAnswerBtn">Submit Answer</button>
+  </div>
+
   <div>
     <input id="nameInput" placeholder="Enter your name">
     <button onclick="createRoom()">Create Room</button>
@@ -31,11 +51,69 @@
   <h3>Players</h3>
   <ul id="playerList"></ul>
 
+  <h3>Submissions</h3>
+  <ul id="submissionList"></ul>
+
   <h3>Messages</h3>
   <div id="messages"></div>
 
   <script>
     const ws = new WebSocket("ws://localhost:8080");
+
+    let currentName = "";
+    let currentHost = "";
+    let currentRoomCode = "";
+
+    const hostControls = document.getElementById("hostControls");
+    const startGameBtn = document.getElementById("startGameBtn");
+    const nextRoundBtn = document.getElementById("nextRoundBtn");
+    const endGameBtn = document.getElementById("endGameBtn");
+    const resetLobbyBtn = document.getElementById("resetLobbyBtn");
+
+    const roomCodeDisplay = document.getElementById("roomCodeDisplay");
+    const hostDisplay = document.getElementById("hostDisplay");
+    const gameStatus = document.getElementById("gameStatus");
+    const roundDisplay = document.getElementById("roundDisplay");
+    const promptDisplay = document.getElementById("promptDisplay");
+
+    const answerInput = document.getElementById("answerInput");
+    const submitAnswerBtn = document.getElementById("submitAnswerBtn");
+    const submissionList = document.getElementById("submissionList");
+
+    function updateHostControls() {
+      if (currentName && currentHost && currentName === currentHost) {
+        hostControls.style.display = "block";
+      } else {
+        hostControls.style.display = "none";
+      }
+    }
+
+    function addMessage(text) {
+      const messageDiv = document.createElement("div");
+      messageDiv.textContent = text;
+      document.getElementById("messages").appendChild(messageDiv);
+    }
+
+    function updatePlayerList(players) {
+      const playerList = document.getElementById("playerList");
+      playerList.innerHTML = "";
+
+      players.forEach((player) => {
+        const li = document.createElement("li");
+        li.textContent = player;
+        playerList.appendChild(li);
+      });
+    }
+
+    function updateSubmissionList(submissions) {
+      submissionList.innerHTML = "";
+
+      submissions.forEach((submission) => {
+        const li = document.createElement("li");
+        li.textContent = `${submission.name}: ${submission.answer}`;
+        submissionList.appendChild(li);
+      });
+    }
 
     ws.onmessage = (event) => {
       const data = JSON.parse(event.data);
@@ -50,24 +128,93 @@
 
       if (data.type === "players") {
         updatePlayerList(data.players);
+
+        currentHost = data.host || "";
+        currentRoomCode = data.roomCode || currentRoomCode;
+
         document.getElementById("hostName").textContent = data.host || "None";
         document.getElementById("currentRoom").textContent = data.roomCode || "Not in a room";
+
+        hostDisplay.textContent = data.host || "-";
+        roomCodeDisplay.textContent = data.roomCode || "-";
+
+        updateHostControls();
       }
 
       if (data.type === "room_created") {
+        currentRoomCode = data.roomCode;
         document.getElementById("currentRoom").textContent = data.roomCode;
+        roomCodeDisplay.textContent = data.roomCode;
         addMessage(`[SYSTEM] Room created: ${data.roomCode}`);
       }
 
       if (data.type === "room_joined") {
+        currentRoomCode = data.roomCode;
         document.getElementById("currentRoom").textContent = data.roomCode;
+        roomCodeDisplay.textContent = data.roomCode;
         addMessage(`[SYSTEM] Joined room: ${data.roomCode}`);
+      }
+
+      if (data.type === "room_state") {
+        const room = data.room;
+
+        currentRoomCode = room.code || currentRoomCode;
+        currentHost = room.host || "";
+
+        roomCodeDisplay.textContent = room.code || "-";
+        hostDisplay.textContent = room.host || "-";
+        gameStatus.textContent = room.game.status || "lobby";
+        roundDisplay.textContent = room.game.round ?? 0;
+        promptDisplay.textContent = room.game.prompt || "-";
+
+        document.getElementById("currentRoom").textContent = room.code || "Not in a room";
+        document.getElementById("hostName").textContent = room.host || "None";
+
+        updateSubmissionList(room.game.submissions || []);
+        updateHostControls();
       }
 
       if (data.type === "error") {
         addMessage(`[ERROR] ${data.text}`);
       }
     };
+
+    startGameBtn.addEventListener("click", () => {
+      ws.send(JSON.stringify({ type: "start_game" }));
+    });
+
+    nextRoundBtn.addEventListener("click", () => {
+      ws.send(JSON.stringify({ type: "next_round" }));
+    });
+
+    endGameBtn.addEventListener("click", () => {
+      ws.send(JSON.stringify({ type: "end_game" }));
+    });
+
+    resetLobbyBtn.addEventListener("click", () => {
+      ws.send(JSON.stringify({ type: "reset_lobby" }));
+    });
+
+    submitAnswerBtn.addEventListener("click", () => {
+      const answer = answerInput.value.trim();
+
+      if (!answer) {
+        return;
+      }
+
+      ws.send(JSON.stringify({
+        type: "submit_answer",
+        answer: answer
+      }));
+
+      answerInput.value = "";
+    });
+
+    answerInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        submitAnswerBtn.click();
+      }
+    });
 
     function getName() {
       return document.getElementById("nameInput").value.trim();
@@ -81,6 +228,8 @@
         return;
       }
 
+      currentName = name;
+
       ws.send(JSON.stringify({
         type: "create_room",
         name: name
@@ -89,12 +238,14 @@
 
     function joinRoom() {
       const name = getName();
-      const code = document.getElementById("roomCodeInput").value.trim();
+      const code = document.getElementById("roomCodeInput").value.trim().toUpperCase();
 
       if (!name || !code) {
         alert("Enter your name and room code");
         return;
       }
+
+      currentName = name;
 
       ws.send(JSON.stringify({
         type: "join_room",
@@ -117,23 +268,6 @@
       }));
 
       input.value = "";
-    }
-
-    function addMessage(text) {
-      const messageDiv = document.createElement("div");
-      messageDiv.textContent = text;
-      document.getElementById("messages").appendChild(messageDiv);
-    }
-
-    function updatePlayerList(players) {
-      const playerList = document.getElementById("playerList");
-      playerList.innerHTML = "";
-
-      players.forEach((player) => {
-        const li = document.createElement("li");
-        li.textContent = player;
-        playerList.appendChild(li);
-      });
     }
   </script>
 </body>

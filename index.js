@@ -31,6 +31,14 @@ const rooms = new Map();
 const clientNames = new Map();
 const clientRooms = new Map();
 
+const prompts = [
+  "Best pizza topping?",
+  "Worst movie sequel?",
+  "Most useless superpower?",
+  "Best road trip snack?",
+  "Worst thing to hear on a first date?",
+];
+
 function generateRoomCode() {
   const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   let code = "";
@@ -52,6 +60,10 @@ function createUniqueRoomCode() {
   return code;
 }
 
+function getRandomPrompt() {
+  return prompts[Math.floor(Math.random() * prompts.length)];
+}
+
 function sendToClient(ws, messageObject) {
   if (ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(messageObject));
@@ -60,7 +72,6 @@ function sendToClient(ws, messageObject) {
 
 function broadcastToRoom(roomCode, messageObject) {
   const room = rooms.get(roomCode);
-
   if (!room) return;
 
   const messageString = JSON.stringify(messageObject);
@@ -69,6 +80,38 @@ function broadcastToRoom(roomCode, messageObject) {
     if (client.readyState === WebSocket.OPEN) {
       client.send(messageString);
     }
+  });
+}
+
+function getRoomState(roomCode) {
+  const room = rooms.get(roomCode);
+  if (!room) return null;
+
+  return {
+    code: room.code,
+    players: room.players.map((client) => clientNames.get(client)),
+    host: clientNames.get(room.host),
+    game: {
+      status: room.game.status,
+      round: room.game.round,
+      maxRounds: room.game.maxRounds,
+      prompt: room.game.prompt,
+      started: room.game.started,
+      submissions: room.game.submissions.map((submission) => ({
+        name: submission.name,
+        answer: submission.answer,
+      })),
+    },
+  };
+}
+
+function broadcastRoomState(roomCode) {
+  const roomState = getRoomState(roomCode);
+  if (!roomState) return;
+
+  broadcastToRoom(roomCode, {
+    type: "room_state",
+    room: roomState,
   });
 }
 
@@ -84,6 +127,94 @@ function broadcastPlayerList(roomCode) {
     host: clientNames.get(room.host),
     roomCode: roomCode,
   });
+}
+
+function isHost(ws, room) {
+  return room.host === ws;
+}
+
+function startGame(roomCode) {
+  const room = rooms.get(roomCode);
+  if (!room) return;
+
+  room.game.started = true;
+  room.game.status = "in_round";
+  room.game.round = 1;
+  room.game.prompt = getRandomPrompt();
+  room.game.submissions = [];
+
+  broadcastToRoom(roomCode, {
+    type: "system",
+    text: "Game started! Round 1 begins.",
+  });
+
+  broadcastRoomState(roomCode);
+}
+
+function nextRound(roomCode) {
+  const room = rooms.get(roomCode);
+  if (!room) return;
+
+  if (!room.game.started) return;
+
+  if (room.game.round >= room.game.maxRounds) {
+    room.game.status = "game_over";
+    room.game.prompt = null;
+    room.game.submissions = [];
+
+    broadcastToRoom(roomCode, {
+      type: "system",
+      text: "Game over!",
+    });
+
+    broadcastRoomState(roomCode);
+    return;
+  }
+
+  room.game.round += 1;
+  room.game.status = "in_round";
+  room.game.prompt = getRandomPrompt();
+  room.game.submissions = [];
+
+  broadcastToRoom(roomCode, {
+    type: "system",
+    text: `Round ${room.game.round} begins.`,
+  });
+
+  broadcastRoomState(roomCode);
+}
+
+function endGame(roomCode) {
+  const room = rooms.get(roomCode);
+  if (!room) return;
+
+  room.game.started = false;
+  room.game.status = "game_over";
+  room.game.prompt = null;
+  room.game.submissions = [];
+
+  broadcastToRoom(roomCode, {
+    type: "system",
+    text: "The host ended the game.",
+  });
+
+  broadcastRoomState(roomCode);
+}
+
+function resetRoomToLobby(roomCode) {
+  const room = rooms.get(roomCode);
+  if (!room) return;
+
+  room.game = {
+    status: "lobby",
+    round: 0,
+    maxRounds: 5,
+    prompt: null,
+    started: false,
+    submissions: [],
+  };
+
+  broadcastRoomState(roomCode);
 }
 
 function removeClientFromRoom(ws) {
@@ -124,6 +255,7 @@ function removeClientFromRoom(ws) {
   }
 
   broadcastPlayerList(roomCode);
+  broadcastRoomState(roomCode);
 }
 
 wss.on("connection", (ws) => {
@@ -162,6 +294,14 @@ wss.on("connection", (ws) => {
         code: roomCode,
         host: ws,
         players: [ws],
+        game: {
+          status: "lobby",
+          round: 0,
+          maxRounds: 5,
+          prompt: null,
+          started: false,
+          submissions: [],
+        },
       });
 
       console.log(`${name} created room ${roomCode}`);
@@ -178,6 +318,7 @@ wss.on("connection", (ws) => {
       });
 
       broadcastPlayerList(roomCode);
+      broadcastRoomState(roomCode);
       return;
     }
 
@@ -226,6 +367,200 @@ wss.on("connection", (ws) => {
       });
 
       broadcastPlayerList(roomCode);
+      broadcastRoomState(roomCode);
+      return;
+    }
+
+    /* START GAME - HOST ONLY */
+    if (data.type === "start_game") {
+      const roomCode = clientRooms.get(ws);
+      const room = rooms.get(roomCode);
+
+      if (!roomCode || !room) {
+        sendToClient(ws, {
+          type: "error",
+          text: "Join a room first",
+        });
+        return;
+      }
+
+      if (!isHost(ws, room)) {
+        sendToClient(ws, {
+          type: "error",
+          text: "Only the host can start the game",
+        });
+        return;
+      }
+
+      if (room.players.length < 2) {
+        sendToClient(ws, {
+          type: "error",
+          text: "Need at least 2 players to start",
+        });
+        return;
+      }
+
+      if (room.game.started) {
+        sendToClient(ws, {
+          type: "error",
+          text: "Game already started",
+        });
+        return;
+      }
+
+      startGame(roomCode);
+      return;
+    }
+
+    /* NEXT ROUND - HOST ONLY */
+    if (data.type === "next_round") {
+      const roomCode = clientRooms.get(ws);
+      const room = rooms.get(roomCode);
+
+      if (!roomCode || !room) {
+        sendToClient(ws, {
+          type: "error",
+          text: "Join a room first",
+        });
+        return;
+      }
+
+      if (!isHost(ws, room)) {
+        sendToClient(ws, {
+          type: "error",
+          text: "Only the host can advance the round",
+        });
+        return;
+      }
+
+      if (!room.game.started) {
+        sendToClient(ws, {
+          type: "error",
+          text: "Game has not started",
+        });
+        return;
+      }
+
+      nextRound(roomCode);
+      return;
+    }
+
+    /* END GAME - HOST ONLY */
+    if (data.type === "end_game") {
+      const roomCode = clientRooms.get(ws);
+      const room = rooms.get(roomCode);
+
+      if (!roomCode || !room) {
+        sendToClient(ws, {
+          type: "error",
+          text: "Join a room first",
+        });
+        return;
+      }
+
+      if (!isHost(ws, room)) {
+        sendToClient(ws, {
+          type: "error",
+          text: "Only the host can end the game",
+        });
+        return;
+      }
+
+      endGame(roomCode);
+      return;
+    }
+
+    /* RESET TO LOBBY - HOST ONLY */
+    if (data.type === "reset_lobby") {
+      const roomCode = clientRooms.get(ws);
+      const room = rooms.get(roomCode);
+
+      if (!roomCode || !room) {
+        sendToClient(ws, {
+          type: "error",
+          text: "Join a room first",
+        });
+        return;
+      }
+
+      if (!isHost(ws, room)) {
+        sendToClient(ws, {
+          type: "error",
+          text: "Only the host can reset the lobby",
+        });
+        return;
+      }
+
+      resetRoomToLobby(roomCode);
+
+      broadcastToRoom(roomCode, {
+        type: "system",
+        text: "Room reset to lobby.",
+      });
+
+      return;
+    }
+
+    /* SUBMIT ANSWER */
+    if (data.type === "submit_answer") {
+      const roomCode = clientRooms.get(ws);
+      const room = rooms.get(roomCode);
+      const playerName = clientNames.get(ws);
+
+      if (!roomCode || !room || !playerName) {
+        sendToClient(ws, {
+          type: "error",
+          text: "Join a room first",
+        });
+        return;
+      }
+
+      if (!room.game.started || room.game.status !== "in_round") {
+        sendToClient(ws, {
+          type: "error",
+          text: "No active round right now",
+        });
+        return;
+      }
+
+      const answer = data.answer?.trim();
+
+      if (!answer) {
+        sendToClient(ws, {
+          type: "error",
+          text: "Answer cannot be empty",
+        });
+        return;
+      }
+
+      const alreadySubmitted = room.game.submissions.find(
+        (submission) => submission.name === playerName
+      );
+
+      if (alreadySubmitted) {
+        sendToClient(ws, {
+          type: "error",
+          text: "You already submitted this round",
+        });
+        return;
+      }
+
+      room.game.submissions.push({
+        name: playerName,
+        answer: answer,
+      });
+
+      sendToClient(ws, {
+        type: "system",
+        text: "Answer submitted",
+      });
+
+      broadcastToRoom(roomCode, {
+        type: "system",
+        text: `${playerName} submitted an answer (${room.game.submissions.length}/${room.players.length})`,
+      });
+
+      broadcastRoomState(roomCode);
       return;
     }
 
@@ -252,6 +587,8 @@ wss.on("connection", (ws) => {
         name: playerName,
         text: text,
       });
+
+      return;
     }
   });
 
