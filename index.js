@@ -31,12 +31,39 @@ const rooms = new Map();
 const clientNames = new Map();
 const clientRooms = new Map();
 
-const prompts = [
-  "Best pizza topping?",
-  "Worst movie sequel?",
-  "Most useless superpower?",
-  "Best road trip snack?",
-  "Worst thing to hear on a first date?",
+const triviaQuestions = [
+  {
+    question: "What planet is known as the Red Planet?",
+    answers: ["mars"],
+  },
+  {
+    question: "How many sides does a hexagon have?",
+    answers: ["6", "six"],
+  },
+  {
+    question: "What is the capital of Nebraska?",
+    answers: ["lincoln"],
+  },
+  {
+    question: "What gas do humans breathe in to survive?",
+    answers: ["oxygen"],
+  },
+  {
+    question: "What is 9 + 10?",
+    answers: ["19", "nineteen"],
+  },
+  {
+    question: "What ocean is on the west coast of the United States?",
+    answers: ["pacific", "pacific ocean"],
+  },
+  {
+    question: "Who lives in a pineapple under the sea?",
+    answers: ["spongebob", "spongebob squarepants"],
+  },
+  {
+    question: "What is the largest planet in our solar system?",
+    answers: ["jupiter"],
+  },
 ];
 
 function generateRoomCode() {
@@ -60,8 +87,12 @@ function createUniqueRoomCode() {
   return code;
 }
 
-function getRandomPrompt() {
-  return prompts[Math.floor(Math.random() * prompts.length)];
+function normalizeAnswer(answer) {
+  return answer.trim().toLowerCase();
+}
+
+function getRandomQuestion() {
+  return triviaQuestions[Math.floor(Math.random() * triviaQuestions.length)];
 }
 
 function sendToClient(ws, messageObject) {
@@ -95,12 +126,10 @@ function getRoomState(roomCode) {
       status: room.game.status,
       round: room.game.round,
       maxRounds: room.game.maxRounds,
-      prompt: room.game.prompt,
       started: room.game.started,
-      submissions: room.game.submissions.map((submission) => ({
-        name: submission.name,
-        answer: submission.answer,
-      })),
+      currentQuestion: room.game.currentQuestion,
+      winner: room.game.winner,
+      scoreboard: room.game.scoreboard,
     },
   };
 }
@@ -133,22 +162,38 @@ function isHost(ws, room) {
   return room.host === ws;
 }
 
+function ensurePlayerHasScore(room, playerName) {
+  if (room.game.scoreboard[playerName] === undefined) {
+    room.game.scoreboard[playerName] = 0;
+  }
+}
+
+function startRound(roomCode, roundNumber) {
+  const room = rooms.get(roomCode);
+  if (!room) return;
+
+  const questionData = getRandomQuestion();
+
+  room.game.status = "in_round";
+  room.game.round = roundNumber;
+  room.game.currentQuestion = questionData.question;
+  room.game.acceptedAnswers = questionData.answers.map(normalizeAnswer);
+  room.game.winner = null;
+
+  broadcastToRoom(roomCode, {
+    type: "system",
+    text: `Round ${room.game.round} begins.`,
+  });
+
+  broadcastRoomState(roomCode);
+}
+
 function startGame(roomCode) {
   const room = rooms.get(roomCode);
   if (!room) return;
 
   room.game.started = true;
-  room.game.status = "in_round";
-  room.game.round = 1;
-  room.game.prompt = getRandomPrompt();
-  room.game.submissions = [];
-
-  broadcastToRoom(roomCode, {
-    type: "system",
-    text: "Game started! Round 1 begins.",
-  });
-
-  broadcastRoomState(roomCode);
+  startRound(roomCode, 1);
 }
 
 function nextRound(roomCode) {
@@ -157,10 +202,14 @@ function nextRound(roomCode) {
 
   if (!room.game.started) return;
 
-  if (room.game.round >= room.game.maxRounds) {
+  const nextRoundNumber = room.game.round + 1;
+
+  if (nextRoundNumber > room.game.maxRounds) {
     room.game.status = "game_over";
-    room.game.prompt = null;
-    room.game.submissions = [];
+    room.game.started = false;
+    room.game.currentQuestion = null;
+    room.game.acceptedAnswers = [];
+    room.game.winner = null;
 
     broadcastToRoom(roomCode, {
       type: "system",
@@ -171,17 +220,7 @@ function nextRound(roomCode) {
     return;
   }
 
-  room.game.round += 1;
-  room.game.status = "in_round";
-  room.game.prompt = getRandomPrompt();
-  room.game.submissions = [];
-
-  broadcastToRoom(roomCode, {
-    type: "system",
-    text: `Round ${room.game.round} begins.`,
-  });
-
-  broadcastRoomState(roomCode);
+  startRound(roomCode, nextRoundNumber);
 }
 
 function endGame(roomCode) {
@@ -190,8 +229,9 @@ function endGame(roomCode) {
 
   room.game.started = false;
   room.game.status = "game_over";
-  room.game.prompt = null;
-  room.game.submissions = [];
+  room.game.currentQuestion = null;
+  room.game.acceptedAnswers = [];
+  room.game.winner = null;
 
   broadcastToRoom(roomCode, {
     type: "system",
@@ -209,10 +249,19 @@ function resetRoomToLobby(roomCode) {
     status: "lobby",
     round: 0,
     maxRounds: 5,
-    prompt: null,
     started: false,
-    submissions: [],
+    currentQuestion: null,
+    acceptedAnswers: [],
+    winner: null,
+    scoreboard: {},
   };
+
+  room.players.forEach((client) => {
+    const playerName = clientNames.get(client);
+    if (playerName) {
+      room.game.scoreboard[playerName] = 0;
+    }
+  });
 
   broadcastRoomState(roomCode);
 }
@@ -231,8 +280,11 @@ function removeClientFromRoom(ws) {
   const playerName = clientNames.get(ws) || "Unknown Player";
 
   room.players = room.players.filter((client) => client !== ws);
-
   clientRooms.delete(ws);
+
+  if (playerName in room.game.scoreboard) {
+    delete room.game.scoreboard[playerName];
+  }
 
   if (room.players.length === 0) {
     rooms.delete(roomCode);
@@ -298,9 +350,13 @@ wss.on("connection", (ws) => {
           status: "lobby",
           round: 0,
           maxRounds: 5,
-          prompt: null,
           started: false,
-          submissions: [],
+          currentQuestion: null,
+          acceptedAnswers: [],
+          winner: null,
+          scoreboard: {
+            [name]: 0,
+          },
         },
       });
 
@@ -353,6 +409,7 @@ wss.on("connection", (ws) => {
       clientNames.set(ws, name);
       clientRooms.set(ws, roomCode);
       room.players.push(ws);
+      ensurePlayerHasScore(room, name);
 
       console.log(`${name} joined room ${roomCode}`);
 
@@ -408,6 +465,13 @@ wss.on("connection", (ws) => {
         return;
       }
 
+      room.players.forEach((client) => {
+        const playerName = clientNames.get(client);
+        if (playerName) {
+          room.game.scoreboard[playerName] = 0;
+        }
+      });
+
       startGame(roomCode);
       return;
     }
@@ -437,6 +501,14 @@ wss.on("connection", (ws) => {
         sendToClient(ws, {
           type: "error",
           text: "Game has not started",
+        });
+        return;
+      }
+
+      if (room.game.status === "in_round") {
+        sendToClient(ws, {
+          type: "error",
+          text: "This round is still active",
         });
         return;
       }
@@ -533,31 +605,37 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      const alreadySubmitted = room.game.submissions.find(
-        (submission) => submission.name === playerName
-      );
+      const normalized = normalizeAnswer(answer);
+      const isCorrect = room.game.acceptedAnswers.includes(normalized);
 
-      if (alreadySubmitted) {
+      if (!isCorrect) {
         sendToClient(ws, {
-          type: "error",
-          text: "You already submitted this round",
+          type: "system",
+          text: "Incorrect",
         });
         return;
       }
 
-      room.game.submissions.push({
-        name: playerName,
-        answer: answer,
-      });
+      if (room.game.winner) {
+        sendToClient(ws, {
+          type: "system",
+          text: `Too late! ${room.game.winner} already won the round.`,
+        });
+        return;
+      }
 
-      sendToClient(ws, {
+      room.game.winner = playerName;
+      room.game.status = "round_end";
+      room.game.scoreboard[playerName] = (room.game.scoreboard[playerName] || 0) + 1;
+
+      broadcastToRoom(roomCode, {
         type: "system",
-        text: "Answer submitted",
+        text: `${playerName} answered correctly and wins the round!`,
       });
 
       broadcastToRoom(roomCode, {
         type: "system",
-        text: `${playerName} submitted an answer (${room.game.submissions.length}/${room.players.length})`,
+        text: `Correct answer: ${room.game.acceptedAnswers[0]}`,
       });
 
       broadcastRoomState(roomCode);

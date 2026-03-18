@@ -1,10 +1,10 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>WebSocket Party Game</title>
+  <title>WebSocket Trivia Game</title>
 </head>
 <body>
-  <h2>Party Game Lobby Test</h2>
+  <h2>Trivia Game</h2>
 
   <div id="hostControls" style="display: none; margin-top: 12px;">
     <button id="startGameBtn">Start Game</button>
@@ -18,11 +18,12 @@
     <div><strong>Host:</strong> <span id="hostDisplay">-</span></div>
     <div><strong>Status:</strong> <span id="gameStatus">lobby</span></div>
     <div><strong>Round:</strong> <span id="roundDisplay">0</span></div>
-    <div><strong>Prompt:</strong> <span id="promptDisplay">-</span></div>
+    <div><strong>Question:</strong> <span id="questionDisplay">-</span></div>
+    <div><strong>Winner:</strong> <span id="winnerDisplay">-</span></div>
   </div>
 
   <div id="answerControls" style="margin-top: 12px;">
-    <input id="answerInput" placeholder="Enter your answer">
+    <input id="answerInput" placeholder="Type your answer fast...">
     <button id="submitAnswerBtn">Submit Answer</button>
   </div>
 
@@ -51,8 +52,8 @@
   <h3>Players</h3>
   <ul id="playerList"></ul>
 
-  <h3>Submissions</h3>
-  <ul id="submissionList"></ul>
+  <h3>Scoreboard</h3>
+  <ul id="scoreboardList"></ul>
 
   <h3>Messages</h3>
   <div id="messages"></div>
@@ -74,11 +75,13 @@
     const hostDisplay = document.getElementById("hostDisplay");
     const gameStatus = document.getElementById("gameStatus");
     const roundDisplay = document.getElementById("roundDisplay");
-    const promptDisplay = document.getElementById("promptDisplay");
+    const questionDisplay = document.getElementById("questionDisplay");
+    const winnerDisplay = document.getElementById("winnerDisplay");
 
     const answerInput = document.getElementById("answerInput");
     const submitAnswerBtn = document.getElementById("submitAnswerBtn");
-    const submissionList = document.getElementById("submissionList");
+
+    const scoreboardList = document.getElementById("scoreboardList");
 
     function updateHostControls() {
       if (currentName && currentHost && currentName === currentHost) {
@@ -89,9 +92,9 @@
     }
 
     function addMessage(text) {
-      const messageDiv = document.createElement("div");
-      messageDiv.textContent = text;
-      document.getElementById("messages").appendChild(messageDiv);
+      const div = document.createElement("div");
+      div.textContent = text;
+      document.getElementById("messages").appendChild(div);
     }
 
     function updatePlayerList(players) {
@@ -105,13 +108,13 @@
       });
     }
 
-    function updateSubmissionList(submissions) {
-      submissionList.innerHTML = "";
+    function updateScoreboard(scoreboard) {
+      scoreboardList.innerHTML = "";
 
-      submissions.forEach((submission) => {
+      Object.entries(scoreboard || {}).forEach(([name, score]) => {
         const li = document.createElement("li");
-        li.textContent = `${submission.name}: ${submission.answer}`;
-        submissionList.appendChild(li);
+        li.textContent = `${name}: ${score}`;
+        scoreboardList.appendChild(li);
       });
     }
 
@@ -165,12 +168,13 @@
         hostDisplay.textContent = room.host || "-";
         gameStatus.textContent = room.game.status || "lobby";
         roundDisplay.textContent = room.game.round ?? 0;
-        promptDisplay.textContent = room.game.prompt || "-";
+        questionDisplay.textContent = room.game.currentQuestion || "-";
+        winnerDisplay.textContent = room.game.winner || "-";
 
         document.getElementById("currentRoom").textContent = room.code || "Not in a room";
         document.getElementById("hostName").textContent = room.host || "None";
 
-        updateSubmissionList(room.game.submissions || []);
+        updateScoreboard(room.game.scoreboard || {});
         updateHostControls();
       }
 
@@ -198,9 +202,7 @@
     submitAnswerBtn.addEventListener("click", () => {
       const answer = answerInput.value.trim();
 
-      if (!answer) {
-        return;
-      }
+      if (!answer) return;
 
       ws.send(JSON.stringify({
         type: "submit_answer",
@@ -210,8 +212,8 @@
       answerInput.value = "";
     });
 
-    answerInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
+    answerInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
         submitAnswerBtn.click();
       }
     });
@@ -258,9 +260,7 @@
       const input = document.getElementById("messageInput");
       const text = input.value.trim();
 
-      if (!text) {
-        return;
-      }
+      if (!text) return;
 
       ws.send(JSON.stringify({
         type: "chat",
